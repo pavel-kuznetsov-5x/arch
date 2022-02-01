@@ -202,7 +202,8 @@ class ViewState(
     val textState: String
 )
 
-// dependencies are part of the state
+// the part of app state that is needed for vm
+// dependencies scopes are part of the state
 class MapVmAppSubState(
     val userState: UserState,
     val loginUseCase: LoginUseCase
