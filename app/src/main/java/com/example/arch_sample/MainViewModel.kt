@@ -1,18 +1,19 @@
 package com.example.arch_sample
 
+import android.util.Log
+import androidx.lifecycle.LiveData
 import androidx.lifecycle.MutableLiveData
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.example.arch_sample.use_case.LoginUseCase
+import com.example.arch_sample.use_case.UserData
 import com.example.arch_sample.util.Failure
 import com.example.arch_sample.util.Result
 import com.example.arch_sample.util.Success
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.FlowPreview
-import kotlinx.coroutines.flow.Flow
-import kotlinx.coroutines.flow.collect
-import kotlinx.coroutines.flow.flow
+import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.launch
 import java.lang.IllegalStateException
 
@@ -20,15 +21,34 @@ import java.lang.IllegalStateException
 @Suppress("ComplexRedundantLet")
 class MainViewModel(
     private val appCoroutineScope: CoroutineScope,
-    private val vmAppSubState: MapVmAppSubState?
+    private val vmAppSubStateLiveData: LiveData<MapVmAppSubState?>,
+    private val appActionHandler: (AppAction) -> Unit
 ) : ViewModel() {
 
     private var state: State = NotLoggedIn(null)
     val viewState = MutableLiveData<ViewState>()
     val toastEvent = MutableLiveData<String>()
 
+    init {
+        // will be bound to vm lifecycle
+        vmAppSubStateLiveData.observeForever {
+            getAppSubState().let {
+                when(it) {
+                    is Success -> AppStateChangedAction(it.data)
+                    is Failure -> ErrorAction(it.exception)
+                }
+            }.let {
+                handleAction(it)
+            }
+        }
+    }
+
     fun onLogin() {
         handleAction(LoginClickedAction)
+    }
+
+    fun onLogout() {
+        handleAction(LogoutClickedAction)
     }
 
     fun onTextChanged(text: String) {
@@ -45,12 +65,12 @@ class MainViewModel(
                 getAppSubState().let {
                     when (it) {
                         is Success -> {
-                            val result = reducer(it.data, oldState, action).let { result ->
+                            val result = reducer(oldState, action).let { result ->
                                 result.mapEffects { effects ->
                                     effects + updateViewStateEffect(result.newState)
                                 }
                             }
-                            handleEffects(result.effects)
+                            handleEffects(it.data, result.effects)
                             result.newState
                         }
                         is Failure -> {
@@ -62,63 +82,10 @@ class MainViewModel(
         }
     }
 
-    private fun updateViewStateEffect(state: State): Set<Effect<*>> {
-        return setOf(UpdateViewStateEffect(flow {
-            when(state) {
-                is LoggedIn -> ViewState(
-                    false,
-                    state.toString()
-                )
-                is NotLoggedIn -> ViewState(
-                    true,
-                    state.toString()
-                )
-                is Error -> ViewState(
-                    false,
-                    state.toString()
-                )
-            }.let {
-                viewState.postValue(it)
-            }
-        }))
-    }
-
-    private fun handleEffects(effects: Set<Effect<*>>) {
-        effects.forEach { effect ->
-            when (effect) {
-                is LogInEffect -> {
-                    appCoroutineScope.launch(Dispatchers.Default) {
-                        effect.flow.collect {
-                            when (it) {
-                                is Success -> handleAction(LoggedInAction(it.data))
-                                is Failure -> handleAction(ErrorAction(it.exception))
-                            }
-                        }
-                    }
-                }
-                is MakeToastEffect -> {
-                    viewModelScope.launch(Dispatchers.Main) {
-                        effect.flow.collect {}
-                    }
-                }
-                is UpdateViewStateEffect -> {
-                    viewModelScope.launch(Dispatchers.Main) {
-                        effect.flow.collect {}
-                    }
-                }
-            } as Any?
-        }
-    }
-
-    private fun getAppSubState(): Result<MapVmAppSubState> {
-        return vmAppSubState?.let { Success(it) } ?: Failure(Exception("Failed to get app state"))
-    }
-
     private fun reducer(
-        appSubState: MapVmAppSubState,
         state: State,
         action: Action
-    ): ReducerResult<State, Effect<*>> {
+    ): ReducerResult<State, Effect> {
         return when (action) {
             is TextChangedAction -> {
                 when (state) {
@@ -126,9 +93,7 @@ class MainViewModel(
                         ReducerResult(it, setOf())
                     }
                     is LoggedIn, is Error -> {
-                        Error(IllegalActionException(action, state)).let {
-                            ReducerResult(it, setOf())
-                        }
+                        ReducerResult(state, setOf())
                     }
                 }
             }
@@ -137,8 +102,13 @@ class MainViewModel(
                     is NotLoggedIn -> ReducerResult(
                         state,
                         setOf(
-                            LogInEffect(appSubState.loginUseCase.flow())
-                        ))
+                            if (!state.currentUsername.isNullOrBlank()) {
+                                LogInEffect(state.currentUsername)
+                            } else {
+                                MakeToastEffect("Username can't be empty")
+                            }
+                        )
+                    )
                     is LoggedIn, is Error -> {
                         Error(IllegalActionException(action, state)).let {
                             ReducerResult(it, setOf())
@@ -154,52 +124,171 @@ class MainViewModel(
                     ReducerResult(it, setOf())
                 }
             }
-            is LoggedInAction -> {
+            is TriggerAppAction -> {
+                ReducerResult(
+                    state,
+                    setOf(TriggerAppActionEffect(action.appAction))
+                )
+            }
+            is AppStateChangedAction -> {
+                val userState = action.appSubState.userState
                 when(state) {
-                    is NotLoggedIn -> {
-                        LoggedIn(action.username).let {
-                                ReducerResult(it, setOf())
+                    is LoggedIn -> {
+                        when(userState) {
+                            is UserLoggedIn -> {
+                                LoggedIn(userState.username)
+                            }
+                            UserNotLoggedIn -> {
+                                NotLoggedIn(null)
+                            }
                         }
                     }
-                    is LoggedIn, is Error -> {
-                        Error(IllegalActionException(action, state)).let {
-                            ReducerResult(it, setOf())
+                    is NotLoggedIn -> {
+                        when(userState) {
+                            is UserLoggedIn -> LoggedIn(userState.username)
+                            UserNotLoggedIn -> state
                         }
+                    }
+                    is Error -> {
+                        state
+                    }
+                }.let { newState ->
+                    ReducerResult(newState, setOf())
+                }
+            }
+            LogoutClickedAction -> {
+                when(state) {
+                    is LoggedIn -> ReducerResult(state, setOf(
+                        TriggerAppActionEffect(LogOutAppAction)
+                    ))
+                    is Error -> ReducerResult(state, setOf())
+                    is NotLoggedIn -> Error(IllegalActionException(action, state)).let {
+                        ReducerResult(it, setOf())
                     }
                 }
             }
         }
     }
 
-    private fun makeToast(text: String): Flow<Result<Any>> {
-        return flow {
-            toastEvent.postValue(text)
+    private fun updateViewStateEffect(state: State): Set<Effect> {
+        return setOf(
+            UpdateViewStateEffect(
+                when (state) {
+                    is LoggedIn -> ViewState(
+                        loginViewsVisible = false,
+                        logoutViewsVisible = true,
+                        textState = state.toString(),
+                        username = state.username
+                    )
+                    is NotLoggedIn -> ViewState(
+                        loginViewsVisible = true,
+                        logoutViewsVisible = false,
+                        textState = state.toString(),
+                        username = state.currentUsername.orEmpty()
+                    )
+                    is Error -> ViewState(
+                        loginViewsVisible = false,
+                        logoutViewsVisible = false,
+                        textState = state.toString(),
+                        username = ""
+                    )
+                }
+            )
+        )
+    }
+
+    private fun handleEffects(appSubState: MapVmAppSubState, effects: Set<Effect>) {
+        effects.map {
+            Log.v("hypertrack-verbose", it.toString())
+            mapEffect(appSubState, it)
+        }.forEach { effectFlow ->
+            appCoroutineScope.launch {
+                effectFlow.collect { action ->
+                    Log.v("hypertrack-verbose", action.toString())
+                    action?.let { handleAction(action) }
+                }
+            }
         }
     }
 
+    private fun mapEffect(appSubState: MapVmAppSubState, effect: Effect): Flow<Action?> {
+        return when (effect) {
+            is LogInEffect -> {
+                appSubState.loginUseCase.flow(effect.username)
+                    .flatMapConcat { result ->
+                        when (result) {
+                            is Success -> {
+                                makeToast("Login success").map { Success(result.data) }
+                            }
+                            is Failure -> {
+                                flowOf(result)
+                            }
+                        }
+                    }
+                    .map {
+                        when (it) {
+                            is Success -> TriggerAppAction(LoggedInAppAction(it.data))
+                            is Failure -> ErrorAction(it.exception)
+                        }
+                    }
+
+            }
+            is UpdateViewStateEffect -> {
+                {
+                    viewState.postValue(effect.viewState)
+                    null
+                }.asFlow()
+            }
+            is MakeToastEffect -> {
+                makeToast(effect.text).map { null }
+            }
+            is TriggerAppActionEffect -> {
+                {
+                    appActionHandler.invoke(effect.action)
+                    null
+                }.asFlow()
+            }
+        }
+    }
+
+    private fun getAppSubState(): Result<MapVmAppSubState> {
+        return vmAppSubStateLiveData.value?.let { Success(it) } ?: Failure(Exception("Failed to get app state"))
+    }
+
+    private fun makeToast(text: String): Flow<Any> {
+        return {
+            toastEvent.postValue(text)
+            true
+        }.asFlow()
+    }
 }
 
 
 sealed class Action
 class ErrorAction(val exception: Exception) : Action()
 class TextChangedAction(val text: String) : Action()
-class LoggedInAction(val username: String) : Action()
+class AppStateChangedAction(val appSubState: MapVmAppSubState) : Action()
+class TriggerAppAction(val appAction: AppAction) : Action()
 
 object LoginClickedAction : Action()
+object LogoutClickedAction : Action()
 
 sealed class State
 data class NotLoggedIn(val currentUsername: String?) : State()
 data class LoggedIn(val username: String) : State()
 data class Error(val exception: Exception) : State()
 
-sealed class Effect<T>(val flow: Flow<T>)
-class LogInEffect(flow: Flow<Result<String>>) : Effect<Result<String>>(flow)
-class MakeToastEffect(flow: Flow<Result<Any>>) : Effect<Result<Any>>(flow)
-class UpdateViewStateEffect(flow: Flow<Result<Any>>) : Effect<Result<Any>>(flow)
+sealed class Effect
+class LogInEffect(val username: String) : Effect()
+class MakeToastEffect(val text: String) : Effect()
+class TriggerAppActionEffect(val action: AppAction) : Effect()
+class UpdateViewStateEffect(val viewState: ViewState) : Effect()
 
 class ViewState(
     val loginViewsVisible: Boolean,
-    val textState: String
+    val logoutViewsVisible: Boolean,
+    val textState: String,
+    val username: String,
 )
 
 // the part of app state that is needed for vm
@@ -209,13 +298,7 @@ class MapVmAppSubState(
     val loginUseCase: LoginUseCase
 )
 
-open class ReducerResult<S, E>(val newState: S, val effects: Set<E>) {
-    constructor(newState: S) : this(newState, setOf())
-
-    fun mapEffects(mapper: (Set<E>) -> Set<E>): ReducerResult<S, E> {
-        return ReducerResult(this.newState, mapper.invoke(this.effects))
-    }
-}
-
 class IllegalActionException(action: Any, state: Any) :
     IllegalStateException("Illegal action $action for state $state")
+
+

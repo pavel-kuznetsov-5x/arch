@@ -20,12 +20,19 @@
         android:layout_height="48dp"
         android:layout_marginTop="32dp"
         android:ems="10"
+        android:text="Friend"
         android:hint='Write "friend" and enter'
         android:inputType="textPersonName" />
 
     <Button
-        android:id="@+id/button"
+        android:id="@+id/bLogIn"
         android:layout_width="wrap_content"
         android:layout_height="wrap_content"
-        android:text="Button" />
+        android:text="Log In" />
+
+    <Button
+        android:id="@+id/bLogOut"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:text="Log Out" />
 </LinearLayout>

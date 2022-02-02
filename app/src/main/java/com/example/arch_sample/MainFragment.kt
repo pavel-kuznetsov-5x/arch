@@ -20,7 +20,8 @@ class MainFragment: Fragment(R.layout.fragment_main) {
 
     override fun onViewCreated(view: View, savedInstanceState: Bundle?) {
         super.onViewCreated(view, savedInstanceState)
-        val button = view.findViewById<TextView>(R.id.button)
+        val bLogIn = view.findViewById<TextView>(R.id.bLogIn)
+        val bLogOut = view.findViewById<TextView>(R.id.bLogOut)
         val etUsername = view.findViewById<EditText>(R.id.etUsername)
 
         vm.viewState.observe(viewLifecycleOwner) {
@@ -35,24 +36,35 @@ class MainFragment: Fragment(R.layout.fragment_main) {
             Toast.makeText(requireContext(), it, Toast.LENGTH_SHORT).show()
         }
 
-        addOnClickListener(button) { _, vm ->
+        addOnClickListener(bLogIn) { _, vm ->
             vm.onLogin()
         }
 
-        etUsername.addTextChangedListener {
-            vm.onTextChanged(it.toString())
+        addOnClickListener(bLogOut) { _, vm ->
+            vm.onLogout()
         }
+
+        vm.onTextChanged(etUsername.text.toString())
     }
 
     private fun displayViewState(view: View, viewState: ViewState) {
         val etUsername = view.findViewById<EditText>(R.id.etUsername)
         val tvState = view.findViewById<TextView>(R.id.tvState)
-        val button = view.findViewById<TextView>(R.id.button)
+        val bLogIn = view.findViewById<TextView>(R.id.bLogIn)
+        val bLogOut = view.findViewById<TextView>(R.id.bLogOut)
 
         tvState.text = viewState.textState
         etUsername.visibility = if(viewState.loginViewsVisible) View.VISIBLE else View.GONE
-        button.visibility = if(viewState.loginViewsVisible) View.VISIBLE else View.GONE
+        bLogIn.visibility = if(viewState.loginViewsVisible) View.VISIBLE else View.GONE
+        bLogOut.visibility = if(viewState.logoutViewsVisible) View.VISIBLE else View.GONE
         tvState.text = viewState.textState
+
+        if(etUsername.text.toString() != viewState.username) {
+            etUsername.setText(viewState.username)
+        }
+        etUsername.addTextChangedListener {
+            vm.onTextChanged(it.toString())
+        }
     }
 
     private fun addOnClickListener(view: View, onClick: (View, MainViewModel) -> Unit) {
